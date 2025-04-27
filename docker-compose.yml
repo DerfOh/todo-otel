@@ -1,0 +1,105 @@
+# version: '3.8'
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.56
+    container_name: jaeger
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Jaeger trace collector (HTTP)
+      - "14250:14250"  # Jaeger gRPC endpoint
+      - "4317:4317"    # OTLP gRPC endpoint
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:16686"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:9090/-/ready"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_FEATURE_TOGGLES_ENABLE=alertingSimplifiedRouting,alertingQueryAndExpressionsStepMode
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/provisioning/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki-config.yaml:/etc/loki/local-config.yaml
+      # - ./loki-wal:/wal  # Mount directory for WAL
+      # - ./loki-data:/loki/data  # Add this if needed for filesystem storage
+      # - ./loki-tmp:/tmp/loki  # Mount directory for index, cache, and chunks
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:3100/ready"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    volumes:
+      - ./promtail-config.yaml:/etc/promtail/config.yaml
+      - ./todo-app.log:/logs/todo-app.log  # Mount the log file into the container
+    command: -config.file=/etc/promtail/config.yaml
+
+  todo-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: todo-app
+    ports:
+      - "8080:8080"
+      - "2112:2112" # Expose the metrics port
+    volumes:
+      - ./todo-app.log:/logs/todo-app.log  # Mount the log file for Promtail
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    ports:
+      - "4318:4318" # OTLP HTTP endpoint
+      - "55680:55680" # OTLP gRPC endpoint
+      - "8888:8888" # Prometheus metrics endpoint
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:4318"]
+      interval: 15s
+      timeout: 10s
+      retries: 5

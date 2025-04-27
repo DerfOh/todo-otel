@@ -1,0 +1,52 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    backoff_config:
+      min_period: 500ms  # Minimum wait time before retrying
+      max_period: 5s     # Maximum wait time before retrying
+    batchsize: 100000  # Maximum batch size in bytes
+
+scrape_configs:
+  - job_name: docker
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          __path__: /var/lib/docker/containers/*/*.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            msg: message
+            trace_id: trace_id
+            span_id: span_id
+      - timestamp:
+          source: time
+          format: RFC3339Nano
+  - job_name: todo-app
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: todo-app
+          app: todo
+          environment: development
+          __path__: /logs/todo-app.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            msg: message
+            trace_id: trace_id
+            span_id: span_id
+      - labels:
+          level:
+          trace_id:
+          span_id:
