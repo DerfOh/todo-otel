@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time" // <-- Import time package
+	"time"
 
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -14,35 +14,46 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
-// Declare global variables used across files
-// Consider using a struct + dependency injection for better organization
+// Global variables required by handlers and other components
 var (
-	store          *Store
-	meterProvider  *sdkmetric.MeterProvider // Keep provider if needed globally
-	meter          metric.Meter             // Keep meter if needed globally
-	taskCounter    metric.Int64Counter
-	handlerLatency metric.Float64Histogram
-	errorCounter   metric.Int64Counter
-	// logFile and logFileMutex are now managed within logger.go
+	store          *Store                   // In-memory task store
+	meterProvider  *sdkmetric.MeterProvider // OTel meter provider for metrics
+	meter          metric.Meter             // OTel meter for creating metrics
+	taskCounter    metric.Int64Counter      // Counter for tracking task operations
+	handlerLatency metric.Float64Histogram  // Histogram for tracking handler latencies
+	errorCounter   metric.Int64Counter      // Counter for tracking errors
 )
 
 func main() {
-	// Initialize components by calling functions from other files
-	initLogger()         // From logger.go
-	defer closeLogFile() // From logger.go
+	// Initialize structured logging
+	initLogger()
+	defer closeLogFile()
+	startLogRotation()
 
-	startLogRotation() // From logger.go
-
-	shutdownTracer := initTracer() // From telemetry.go
+	// Initialize OpenTelemetry tracing
+	shutdownTracer := initTracer()
 	defer shutdownTracer()
 
-	initMetrics() // From telemetry.go
+	// Initialize OpenTelemetry metrics
+	initMetrics()
 
-	store = NewStore() // From store.go
+	// Initialize task store
+	store = NewStore()
 
-	// Setup HTTP routes using handlers from handlers.go
+	// Configure and start HTTP server
+	mux := setupRoutes()
+	server := createServer(mux)
+	startServerAsync(server)
+
+	// Wait for shutdown signal and perform cleanup
+	handleGracefulShutdown(server)
+}
+
+// setupRoutes configures all HTTP routes with OTel instrumentation
+func setupRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
-	// Wrap handlers with OpenTelemetry instrumentation
+
+	// Register API endpoints with OpenTelemetry instrumentation wrappers
 	mux.Handle("/add", otelhttp.NewHandler(http.HandlerFunc(addHandler), "addHandler"))
 	mux.Handle("/list", otelhttp.NewHandler(http.HandlerFunc(listHandler), "listHandler"))
 	mux.Handle("/delete", otelhttp.NewHandler(http.HandlerFunc(deleteHandler), "deleteHandler"))
@@ -50,45 +61,55 @@ func main() {
 	mux.Handle("/get", otelhttp.NewHandler(http.HandlerFunc(getHandler), "getHandler"))
 	mux.Handle("/complete", otelhttp.NewHandler(http.HandlerFunc(completeHandler), "completeHandler"))
 	mux.Handle("/search", otelhttp.NewHandler(http.HandlerFunc(searchHandler), "searchHandler"))
-	// Note: The /metrics endpoint is started within initMetrics()
 
-	// Start HTTP server
-	server := &http.Server{
-		Addr:    ":8080", // Main application server port
-		Handler: mux,
+	return mux
+}
+
+// createServer initializes the HTTP server with configuration
+func createServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:         ":8080",
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
+}
 
+// startServerAsync starts the HTTP server in a goroutine
+func startServerAsync(server *http.Server) {
 	go func() {
 		log.Info().Msg("Main HTTP server starting on :8080")
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatal().Err(err).Msg("Main server failed to start")
 		}
 	}()
+}
 
-	// Graceful shutdown handling
+// handleGracefulShutdown waits for termination signals and shuts down cleanly
+func handleGracefulShutdown(server *http.Server) {
+	// Wait for interrupt signal
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 
 	log.Info().Msg("Shutting down server...")
 
-	// Add context with timeout for shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // Use a reasonable timeout e.g. 5*time.Second
+	// Create shutdown context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Shutdown main HTTP server
+	// Attempt graceful shutdown
 	if err := server.Shutdown(ctx); err != nil {
 		log.Error().Err(err).Msg("Server shutdown failed")
 	} else {
 		log.Info().Msg("Server gracefully stopped")
 	}
 
-	// Shutdown meter provider (if applicable and needed)
+	// Clean up OTel meter provider
 	if meterProvider != nil {
 		if err := meterProvider.Shutdown(context.Background()); err != nil {
 			log.Error().Err(err).Msg("MeterProvider shutdown failed")
 		}
 	}
-
-	// Tracer shutdown is handled by defer earlier
 }
