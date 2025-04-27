@@ -1,0 +1,37 @@
+# macOS specific
+.DS_Store
+*.swp
+*.swo
+
+# Log files
+*.log
+/logs/ # Ignore the whole logs directory if mounted as volume content
+todo-app.log # Specifically ignore this file if it's in the root
+
+# Go build artifacts
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of coverage testing:
+*.out
+
+# Go workspace file
+go.work
+
+# Compiled binary name (adjust if different)
+todo-app
+
+# Environment variables file (if you use one)
+.env
+
+# IDE/Editor specific
+.vscode/
+.idea/
+
